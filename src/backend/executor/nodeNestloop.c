@@ -401,6 +401,208 @@ static TupleTableSlot* ExecRightBanditJoin(PlanState *pstate)
 		ENL1_printf("qualification failed, looping");
 	}
 }
+static TupleTableSlot* ExecExplorationBasedJoin(PlanState *pstate)
+{
+	NestLoopState *node = castNode(NestLoopState, pstate);
+	NestLoop   *nl;
+	PlanState  *innerPlan;
+	PlanState  *outerPlan;
+	TupleTableSlot *outerTupleSlot;
+	TupleTableSlot *innerTupleSlot;
+	ExprState  *joinqual;
+	ExprState  *otherqual;
+	ExprContext *econtext;
+	ListCell   *lc;
+
+	CHECK_FOR_INTERRUPTS();
+
+	/*
+	 * get information from the node
+	 */
+	ENL1_printf("getting info from node");
+	nl = (NestLoop *) node->js.ps.plan;
+	joinqual = node->js.joinqual;
+	otherqual = node->js.ps.qual;
+	outerPlan = outerPlanState(node);
+	innerPlan = innerPlanState(node);
+	econtext = node->js.ps.ps_ExprContext;
+	
+	/*
+	 * Reset per-tuple memory context to free any expression evaluation
+	 * storage allocated in the previous tuple cycle.
+	 */
+	ResetExprContext(econtext);
+
+	/*
+	 * Ok, everything is setup for the join so now loop until we return a
+	 * qualifying join tuple.
+	 */
+	ENL1_printf("entering main loop");
+
+
+	// if (nl->join.inner_unique)
+		// elog(WARNING, "inner relation is detected as unique");
+	if (!node->isExplBasedlExploration) {
+		if (node->doLearning) {
+			// Switch to bandit join
+		} else {
+			// Switch to nested loop
+		}
+	}
+	for (;;)
+	{
+		if (node->needOuterPage) {
+			if (!node->reachedEndOfOuter && node->activeRelationPages < node->outerExploration) { 
+				// explore
+				node->pageIndex++;
+				node->pageIndex = MAX(node->pageIndex, node->lastPageIndex); 
+				LoadNextOuterPage(outerPlan, node->outerPage, node->xidScanKey, node->pageIndex);
+				if (node->outerPage->tupleCount < PAGE_SIZE) {
+					elog(INFO, "Reached end of outer");
+					node->reachedEndOfOuter = true;
+					if (node->outerPage->tupleCount == 0) continue;
+				}
+				node->outerTupleCounter += node->outerPage->tupleCount;
+				node->outerPageCounter++;
+				node->lastReward = 0;
+				node->exploreStepCounter = 1;
+			} else if (!node->reachedEndOfOuter && node->activeRelationPages == node->outerExploration) {
+				// exploit
+				node->isExplBasedlExploration = false;
+				node->exploitStepCounter = 0;
+				node->lastPageIndex = MAX(node->pageIndex, node->lastPageIndex); 
+				// node->pageIndex = popBestPageXid(node);
+				// LoadNextOuterPage(outerPlan, node->outerPage, node->xidScanKey, node->pageIndex);
+			} else {
+				// join is done
+				elog(INFO, "Join finished normally");
+				return NULL;
+
+			}
+			node->needOuterPage = false;
+			node->needInnerPage = true;
+		}
+		if (node->needInnerPage) {
+			if (node->reachedEndOfInner) {
+				// Getting ready for rescan
+				foreach(lc, nl->nestParams)
+				{
+					NestLoopParam *nlp = (NestLoopParam *) lfirst(lc);
+					int paramno = nlp->paramno;
+					ParamExecData *prm;
+
+					prm = &(econtext->ecxt_param_exec_vals[paramno]);
+					// Param value should be an OUTER_VAR var 
+					Assert(IsA(nlp->paramval, Var));
+					Assert(nlp->paramval->varno == OUTER_VAR);
+					Assert(nlp->paramval->varattno > 0);
+					// prm->value = slot_getattr(outerTupleSlot,
+					prm->value = slot_getattr(node->outerPage->tuples[0],
+							nlp->paramval->varattno,
+							&(prm->isnull));
+					// Flag parameter value as changed 
+					innerPlan->chgParam = bms_add_member(innerPlan->chgParam, paramno);
+				}
+				node->innerPageCounter = 0;
+				ExecReScan(innerPlan);
+				node->rescanCount++;
+				node->reachedEndOfInner = false;
+			}
+			LoadNextPage(innerPlan, node->innerPage);
+			if (node->innerPage->tupleCount < PAGE_SIZE) {
+				node->reachedEndOfInner = true;
+				if (node->innerPage->tupleCount == 0) continue;
+			} 
+			node->innerTupleCounter += node->innerPage->tupleCount;
+			node->innerPageCounter++;
+			node->innerPageCounterTotal++;
+			node->needInnerPage = false;
+		} 
+		if (node->innerPage->index == node->innerPage->tupleCount) {
+			if (node->outerPage->index < node->outerPage->tupleCount - 1) {
+				node->outerPage->index++;
+				node->innerPage->index = 0;
+			} else {
+				node->needInnerPage = true;
+				if (node->isExploring && node->lastReward > 0 
+						&& node->exploreStepCounter < node->innerPageNumber) { //stay with current
+					node->outerPage->index = 0;
+					node->reward += node->lastReward;
+					node->lastReward = 0;
+					node->exploreStepCounter++;
+				} else if (node->isExploring && node->exploreStepCounter == node->innerPageNumber) {
+					// we have generated all possible joins for the current output page
+					// while exploring, no need to store it
+					node->needOuterPage = true;
+				} else if (node->isExploring && node->lastReward == 0) {
+					//push the current explored page
+					node->xids[node->activeRelationPages] = node->pageIndex;
+					node->rewards[node->activeRelationPages] = node->reward;
+					node->activeRelationPages++;
+					node->needOuterPage = true;
+				} else if (!node->isExploring && node->exploitStepCounter < node->innerPageNumber) { 
+					node->outerPage->index = 0;
+					node->exploitStepCounter++;
+				} else if (!node->isExploring && node->exploitStepCounter == node->innerPageNumber) {
+					// Done with this outer page forever
+					node->needOuterPage = true;
+				} else {
+					elog(ERROR, "Khiarlikh...");
+				}
+				continue;
+			}
+		}
+
+		outerTupleSlot = node->outerPage->tuples[node->outerPage->index];
+		econtext->ecxt_outertuple = outerTupleSlot;
+		innerTupleSlot = node->innerPage->tuples[node->innerPage->index]; 
+		econtext->ecxt_innertuple = innerTupleSlot;
+		node->innerPage->index++;
+		if (TupIsNull(innerTupleSlot)){
+			elog(WARNING, "inner tuple is null");
+			return NULL;
+		}
+		if (TupIsNull(outerTupleSlot)){
+			if (node->activeRelationPages > 0) { // still has pages in stack
+				// elog(WARNING, "Finishing join while there are active pages");
+				elog(INFO, "Null outer detected");
+				node->needOuterPage = true;
+				continue;
+			}
+			return NULL;
+		}
+
+		ENL1_printf("testing qualification");
+		if (ExecQual(joinqual, econtext))
+		{
+
+			if (otherqual == NULL || ExecQual(otherqual, econtext))
+			{
+				ENL1_printf("qualification succeeded, projecting tuple");
+				node->lastReward++;
+				node->generatedJoins++;
+				if (node->pageIndex >= node->outerPageNumber){
+					elog(WARNING, "pageIndex > outerPageNumber!?");
+					return NULL;
+				}
+				//TODO do this check earlier in the algorithm
+				if (list_member_int(node->pageIdJoinIdLists[node->pageIndex], node->innerPageCounter)) {
+					continue;
+				}
+				// Add current xid-innerPageCounter to result sets
+				lcons_int(node->innerPageCounter, node->pageIdJoinIdLists[node->pageIndex]);  
+				return ExecProject(node->js.ps.ps_ProjInfo);
+			}
+			else
+				InstrCountFiltered2(node, 1);
+		}
+		else
+			InstrCountFiltered1(node, 1);
+
+		ResetExprContext(econtext);
+		ENL1_printf("qualification failed, looping");
+	}
+}
 
 static TupleTableSlot* ExecBanditJoin(PlanState *pstate)
 {
@@ -733,7 +935,7 @@ static TupleTableSlot* ExecBlockNestedLoop(PlanState *pstate)
 
 	CHECK_FOR_INTERRUPTS();
 	ENL1_printf("getting info from node");
-
+	elog(INFO, "Running Block nested loop");
 	nl = (NestLoop *) node->js.ps.plan;
 	joinqual = node->js.joinqual;
 	otherqual = node->js.ps.qual;
@@ -1163,7 +1365,7 @@ static TupleTableSlot* ExecNestLoop(PlanState *pstate)
 		if (strcmp(fliporder, "on") == 0) {
 			tts = ExecRightBanditJoin(pstate);
 		} else {
-			tts = ExecBanditJoin(pstate);
+			tts = ExecExplorationBasedJoin(pstate);
 		}
 	} else if (strcmp(blocknestloop, "on") == 0) {
 		if (strcmp(fliporder, "on") == 0) {
@@ -1319,7 +1521,12 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 
 	nlstate->outerPage = CreateRelationPage();  
 	nlstate->innerPage = CreateRelationPage();
-
+	nlstate->outerExploration = 10;
+	// nlstate->innerExplorationBlocks = (pow(nlstate->innerPageNumber, (2.0/3.0)) * pow(log(nlstate->innerPageNumber), (1.0/3.0))) / PAGE_SIZE;
+	nlstate->innerExplorationBlocks = 30;
+	nlstate->exploratoryRewards = palloc(nlstate->outerExploration * sizeof(int));
+	nlstate->doLearning = false;
+	nlstate->isExplBasedlExploration = true;
 	NL1_printf("ExecInitNestLoop: %s\n",
 			   "node initialized");
 	/*

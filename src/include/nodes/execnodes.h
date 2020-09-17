@@ -1756,6 +1756,10 @@ typedef struct NestLoopState
 	int lastPageIndex;
 	ScanKey xidScanKey;
 
+	// //Exploration Based Bandit Join
+	int innerExplorationBlocks;
+	int outerExploration;
+	
 	List** pageIdJoinIdLists;
 
 } NestLoopState;
