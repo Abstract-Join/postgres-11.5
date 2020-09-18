@@ -1521,6 +1521,7 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 
 	nlstate->outerPage = CreateRelationPage();  
 	nlstate->innerPage = CreateRelationPage();
+	
 	nlstate->outerExploration = 10;
 	// nlstate->innerExplorationBlocks = (pow(nlstate->innerPageNumber, (2.0/3.0)) * pow(log(nlstate->innerPageNumber), (1.0/3.0))) / PAGE_SIZE;
 	nlstate->innerExplorationBlocks = 30;
