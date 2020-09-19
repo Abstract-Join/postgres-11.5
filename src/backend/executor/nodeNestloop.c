@@ -1585,8 +1585,7 @@ static TupleTableSlot* ExecExplorationBasedJoin(PlanState *pstate)
 	if (!node->isExplBasedlExploration) {
 		TupleTableSlot *tts;
 		if (node->doLearning) {
-			// tts = ExecBanditJoin(pstate);
-			tts = ExecIndexBasedBlockNestedLoop(pstate);
+			tts = ExecBanditJoin(pstate);
 
 		} else {
 			tts = ExecIndexBasedBlockNestedLoop(pstate);
