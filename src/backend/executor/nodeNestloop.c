@@ -1387,7 +1387,7 @@ static TupleTableSlot* ExecExplorationBasedJoin(PlanState *pstate)
 	 */
 	ENL1_printf("entering main loop");
 
-
+	// elog(INFO, "ExecExplorationBasedJoin");
 	// if (nl->join.inner_unique)
 		// elog(WARNING, "inner relation is detected as unique");
 
@@ -1734,9 +1734,14 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	nlstate->outerPage = CreateRelationPage();  
 	nlstate->innerPage = CreateRelationPage();
 	
-	nlstate->outerExplorationBlocks = 30;
-	// nlstate->innerExplorationBlocks = (pow(nlstate->innerPageNumber, (2.0/3.0)) * pow(log(nlstate->innerPageNumber), (1.0/3.0))) / PAGE_SIZE;
-	nlstate->innerExplorationBlocks = 90;
+	int ratioOfOuterBlocksToExplore = 0.01;
+	nlstate->outerExplorationBlocks = (int)(ratioOfOuterBlocksToExplore * nlstate->outerPageNumber);
+	elog(INFO, "nlstate->outerExplorationBlocks : %d",nlstate->outerExplorationBlocks);
+	
+	// nlstate->innerExplorationBlocks = 90;
+	nlstate->innerExplorationBlocks = (pow(nlstate->innerPageNumber, (2.0/3.0)) * pow(log(nlstate->innerPageNumber), (1.0/3.0))) / PAGE_SIZE;
+	elog(INFO, "nlstate->innerExplorationBlocks : %d", nlstate->innerExplorationBlocks);
+
 	nlstate->innerBlocksExplored = 0;
 	nlstate->exploratoryRewards = palloc(nlstate->outerExplorationBlocks * sizeof(int));
 	nlstate->doLearning = false;
