@@ -427,7 +427,7 @@ static bool doLearningAfterExploration(int* exploratoryRewards, int outerBlocksT
 	elog(INFO, "\nMax Entropy Value : %4f", maxEntropyValue);
 	elog(INFO, "\nEntropy : %.3f", entropy);
 
-	if (entropy > maxEntropyValue * 0.9 || maxEntropyValue *entropy < 0.6) {
+	if (entropy > maxEntropyValue * 0.9 || maxEntropyValue * 0.6 > entropy) {
 		return false;
 	} else {
 		return true;
