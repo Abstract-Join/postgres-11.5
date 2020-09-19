@@ -401,6 +401,36 @@ static TupleTableSlot* ExecRightBanditJoin(PlanState *pstate)
 		ENL1_printf("qualification failed, looping");
 	}
 }
+
+static bool doLearningAfterExploration(int* exploratoryRewards, int outerBlocksToExplore) {
+	long total = 0;
+	float entropy=0.0;
+	int i;
+	for (i = 0; i < outerBlocksToExplore; i++) {
+		total += exploratoryRewards[i];
+	}
+
+	for(i = 0; i <  outerBlocksToExplore; i++) {
+		float prob = (float) exploratoryRewards[i] / (float)total;
+		// printf("\nLog : %.3f", prob);
+
+		entropy += prob * log(prob);
+		// printf("\nEntropy : %.3f", entropy);
+	}
+
+	entropy = -entropy;
+
+	float maxEntropyValue = log(outerBlocksToExplore);
+	elog(INFO, "\nMax Entropy Value : %4f", maxEntropyValue);
+	elog(INFO, "\nEntropy : %.3f", entropy);
+
+	if (entropy > maxEntropyValue * 0.9 || maxEntropyValue *entropy < 0.6) {
+		return false;
+	} else {
+		return true;
+	}
+}
+
 static TupleTableSlot* ExecExplorationBasedJoin(PlanState *pstate)
 {
 	NestLoopState *node = castNode(NestLoopState, pstate);
@@ -420,13 +450,14 @@ static TupleTableSlot* ExecExplorationBasedJoin(PlanState *pstate)
 	 * get information from the node
 	 */
 	ENL1_printf("getting info from node");
+
 	nl = (NestLoop *) node->js.ps.plan;
 	joinqual = node->js.joinqual;
 	otherqual = node->js.ps.qual;
 	outerPlan = outerPlanState(node);
 	innerPlan = innerPlanState(node);
 	econtext = node->js.ps.ps_ExprContext;
-	
+
 	/*
 	 * Reset per-tuple memory context to free any expression evaluation
 	 * storage allocated in the previous tuple cycle.
@@ -442,18 +473,21 @@ static TupleTableSlot* ExecExplorationBasedJoin(PlanState *pstate)
 
 	// if (nl->join.inner_unique)
 		// elog(WARNING, "inner relation is detected as unique");
+
 	if (!node->isExplBasedlExploration) {
 		if (node->doLearning) {
-			// Switch to bandit join
+			return ExecBanditJoin(pstate);
 		} else {
-			// Switch to nested loop
+			return ExecBlockNestedLoop(pstate);
 		}
 	}
+
 	for (;;)
 	{
 		if (node->needOuterPage) {
-			if (!node->reachedEndOfOuter && node->activeRelationPages < node->outerExploration) { 
+			if (!node->reachedEndOfOuter && node->activeRelationPages < node->outerExplorationBlocks) { 
 				// explore
+				node->isExploring = true;
 				node->pageIndex++;
 				node->pageIndex = MAX(node->pageIndex, node->lastPageIndex); 
 				LoadNextOuterPage(outerPlan, node->outerPage, node->xidScanKey, node->pageIndex);
@@ -466,21 +500,28 @@ static TupleTableSlot* ExecExplorationBasedJoin(PlanState *pstate)
 				node->outerPageCounter++;
 				node->lastReward = 0;
 				node->exploreStepCounter = 1;
-			} else if (!node->reachedEndOfOuter && node->activeRelationPages == node->outerExploration) {
-				// exploit
+
+				node->needOuterPage = false;
+				node->needInnerPage = true;
+
+			} else if (!node->reachedEndOfOuter && node->activeRelationPages == node->outerExplorationBlocks){
+				// Done Exploring
 				node->isExplBasedlExploration = false;
-				node->exploitStepCounter = 0;
-				node->lastPageIndex = MAX(node->pageIndex, node->lastPageIndex); 
-				// node->pageIndex = popBestPageXid(node);
-				// LoadNextOuterPage(outerPlan, node->outerPage, node->xidScanKey, node->pageIndex);
+				node->needOuterPage = true;
+				node->needInnerPage = false;
+			
 			} else {
 				// join is done
 				elog(INFO, "Join finished normally");
 				return NULL;
 
 			}
-			node->needOuterPage = false;
-			node->needInnerPage = true;
+		}
+
+		if (!node->isExplBasedlExploration) {
+			//Calculate Entropy
+			node->doLearning = doLearningAfterExploration(node->exploratoryRewards, node->outerExplorationBlocks);
+			break;
 		}
 		if (node->needInnerPage) {
 			if (node->reachedEndOfInner) {
@@ -512,43 +553,37 @@ static TupleTableSlot* ExecExplorationBasedJoin(PlanState *pstate)
 			if (node->innerPage->tupleCount < PAGE_SIZE) {
 				node->reachedEndOfInner = true;
 				if (node->innerPage->tupleCount == 0) continue;
-			} 
+			}
+			
+			 
 			node->innerTupleCounter += node->innerPage->tupleCount;
 			node->innerPageCounter++;
 			node->innerPageCounterTotal++;
 			node->needInnerPage = false;
-		} 
+			node->doneCollectingBanditReward = false;
+
+		}
+		
 		if (node->innerPage->index == node->innerPage->tupleCount) {
+			
 			if (node->outerPage->index < node->outerPage->tupleCount - 1) {
 				node->outerPage->index++;
 				node->innerPage->index = 0;
 			} else {
 				node->needInnerPage = true;
-				if (node->isExploring && node->lastReward > 0 
-						&& node->exploreStepCounter < node->innerPageNumber) { //stay with current
-					node->outerPage->index = 0;
-					node->reward += node->lastReward;
-					node->lastReward = 0;
-					node->exploreStepCounter++;
-				} else if (node->isExploring && node->exploreStepCounter == node->innerPageNumber) {
-					// we have generated all possible joins for the current output page
-					// while exploring, no need to store it
-					node->needOuterPage = true;
-				} else if (node->isExploring && node->lastReward == 0) {
-					//push the current explored page
+				node->reward += node->lastReward;
+				node->lastReward = 0;
+				if (!node->doneCollectingBanditReward && node->lastReward == 0) { //stay with current
 					node->xids[node->activeRelationPages] = node->pageIndex;
 					node->rewards[node->activeRelationPages] = node->reward;
-					node->activeRelationPages++;
-					node->needOuterPage = true;
-				} else if (!node->isExploring && node->exploitStepCounter < node->innerPageNumber) { 
-					node->outerPage->index = 0;
-					node->exploitStepCounter++;
-				} else if (!node->isExploring && node->exploitStepCounter == node->innerPageNumber) {
-					// Done with this outer page forever
-					node->needOuterPage = true;
-				} else {
-					elog(ERROR, "Khiarlikh...");
-				}
+					node->doneCollectingBanditReward = true;
+				} 
+				if (node->innerBlocksExplored == node->innerExplorationBlocks) {
+					node->exploratoryRewards[node->activeRelationPages] = node->reward;
+
+				} 
+				node->activeRelationPages++;
+				node->needOuterPage = true;
 				continue;
 			}
 		}
@@ -602,7 +637,16 @@ static TupleTableSlot* ExecExplorationBasedJoin(PlanState *pstate)
 		ResetExprContext(econtext);
 		ENL1_printf("qualification failed, looping");
 	}
+
+	if (!node->isExplBasedlExploration) {
+		if (node->doLearning) {
+			return ExecBanditJoin(pstate);
+		} else {
+			return ExecBlockNestedLoop(pstate);
+		}
+	}
 }
+
 
 static TupleTableSlot* ExecBanditJoin(PlanState *pstate)
 {
@@ -1522,11 +1566,14 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	nlstate->outerPage = CreateRelationPage();  
 	nlstate->innerPage = CreateRelationPage();
 	
-	nlstate->outerExploration = 10;
+	nlstate->outerExplorationBlocks = 10;
 	// nlstate->innerExplorationBlocks = (pow(nlstate->innerPageNumber, (2.0/3.0)) * pow(log(nlstate->innerPageNumber), (1.0/3.0))) / PAGE_SIZE;
 	nlstate->innerExplorationBlocks = 30;
 	nlstate->exploratoryRewards = palloc(nlstate->outerExploration * sizeof(int));
 	nlstate->doLearning = false;
+	nlstate->doneCollectingBanditReward = false;
+	nlstate->kFailure = 1;
+
 	nlstate->isExplBasedlExploration = true;
 	NL1_printf("ExecInitNestLoop: %s\n",
 			   "node initialized");

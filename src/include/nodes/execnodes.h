@@ -1758,11 +1758,11 @@ typedef struct NestLoopState
 
 	// //Exploration Based Bandit Join
 	int innerExplorationBlocks;
-	int outerExploration;
+	int outerExplorationBlocks;
 	bool isExplBasedlExploration;
 	int* exploratoryRewards;
 	bool doLearning;
-	
+	bool doneCollectingBanditReward;
 	List** pageIdJoinIdLists;
 
 } NestLoopState;
