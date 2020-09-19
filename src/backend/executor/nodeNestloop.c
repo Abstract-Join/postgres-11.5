@@ -1733,7 +1733,7 @@ ExecInitNestLoop(NestLoop *node, EState *estate, int eflags)
 	nlstate->outerPage = CreateRelationPage();  
 	nlstate->innerPage = CreateRelationPage();
 	
-	int ratioOfOuterBlocksToExplore = 0.01;
+	float ratioOfOuterBlocksToExplore = 0.01;
 	nlstate->outerExplorationBlocks = (int)(ratioOfOuterBlocksToExplore * nlstate->outerPageNumber);
 	elog(INFO, "nlstate->outerExplorationBlocks : %d",nlstate->outerExplorationBlocks);
 	
