@@ -12,6 +12,6 @@ set enable_fastjoin = on;
 set enable_block=on;
 set max_parallel_workers_per_gather=0;
 
-EXPLAIN select * from customer join orders on c_custkey = o_custkey LIMIT 1000;
+EXPLAIN select * from customer join orders on c_custkey = o_custkey LIMIT 100;
 
 select * from customer join orders on c_custkey = o_custkey LIMIT 100;

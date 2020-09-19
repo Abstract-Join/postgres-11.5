@@ -408,7 +408,7 @@ static bool doLearningAfterExploration(int* exploratoryRewards, int outerBlocksT
 	int i;
 	for (i = 0; i < outerBlocksToExplore; i++) {
 		int reward =  exploratoryRewards[i] + 1;
-		elog(INFO, "\nexploratoryRewards[%d] : %df", i, reward);
+		elog(INFO, "\nexploratoryRewards[%d] : %d", i, reward);
 		total += reward;
 	}
 
