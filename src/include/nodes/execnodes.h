@@ -1763,6 +1763,9 @@ typedef struct NestLoopState
 	int* exploratoryRewards;
 	bool doLearning;
 	bool doneCollectingBanditReward;
+	int innerBlocksExplored;
+	int currentOuterBlockReward;;
+
 	List** pageIdJoinIdLists;
 
 } NestLoopState;
